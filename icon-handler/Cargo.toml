@@ -1,0 +1,12 @@
+[package]
+name = "fileglyph-icon-handler"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+winreg = "0.56.0"

@@ -1,0 +1,11 @@
+pub mod classify;
+pub mod cli;
+pub mod config;
+pub mod icon;
+pub mod model;
+pub mod operations;
+pub mod output;
+pub mod paths;
+pub mod platform;
+pub mod scan;
+pub mod state;

@@ -1,0 +1,5 @@
+/target/
+/dist/
+*.tmp
+*.bak
+fileglyph-category-preview.png

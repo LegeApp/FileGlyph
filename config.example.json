@@ -1,0 +1,37 @@
+{
+  "style": {
+    "sizes": [16, 20, 24, 32, 40, 48, 64, 96, 128, 256],
+    "font_paths": [
+      "%WINDIR%\\Fonts\\segoeuib.ttf",
+      "%WINDIR%\\Fonts\\segoeui.ttf",
+      "%WINDIR%\\Fonts\\bahnschrift.ttf",
+      "%WINDIR%\\Fonts\\arialbd.ttf",
+      "%WINDIR%\\Fonts\\arial.ttf"
+    ],
+    "font_height_ratio": 0.72,
+    "horizontal_scale": 0.50,
+    "right_padding_ratio": 0.07,
+    "top_padding_ratio": 0.07,
+    "max_width_ratio": 0.88,
+    "halo_radius_ratio": 0.018,
+    "halo_alpha": 220,
+    "supersample": 4,
+    "max_label_chars": 4
+  },
+  "category_overrides": {
+    ".asd": "internal",
+    ".ledgerdb": "database"
+  },
+  "label_overrides": {
+    ".sqlite3": "SQLT",
+    ".ledgerdb": "LDB"
+  },
+  "color_overrides": {
+    "internal": "#65707E",
+    "database": "#58717A"
+  },
+  "excluded_extensions": [
+    ".tmp",
+    ".bak"
+  ]
+}
