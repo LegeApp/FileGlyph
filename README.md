@@ -1,44 +1,69 @@
 # FileGlyph prototype
 
-FileGlyph is a Windows 11 CLI and GUI that finds registered file extensions with missing or generic icons, generates restrained text-only `.ico` files, and installs per-extension visual identities.
+FileGlyph is a CLI and GUI for **Windows 11 and Linux** that finds registered file
+types with missing or generic icons, generates restrained text-only icons, and
+installs them as per-file-type visual identities.
 
 The intended result is not a set of decorative application icons. It is a quiet system convention: a file extension becomes readable at a glance through a short label, while a stable category color distinguishes text, documents, images, video, databases, internal application files, and related groups.
 
 ## What this prototype already does
 
-- Enumerates extension keys from the merged Windows class registry and Explorer's per-user `FileExts` history.
-- Resolves the effective ProgID, executable, application name, document name, content type, perceived type, and icon using `AssocQueryStringW`.
-- Detects:
-  - associated extensions with no reported icon;
-  - extensions whose icon resolves to index 0 of the associated executable;
-  - likely generic icons sourced from `shell32.dll`, `imageres.dll`, or `ddores.dll`;
-  - existing extension-level overrides, which are preserved by automatic modes.
+Shared across both platforms:
+
 - Assigns one of 14 categories using extension lists, MIME/content type, perceived type, and association-name hints.
-- Generates a multi-image ICO with 16, 20, 24, 32, 40, 48, 64, 96, 128, and 256-pixel entries.
-- Loads a Windows-installed UI font at run time; no font file is bundled.
-- Writes `DefaultIcon` at either user or machine scope.
-- On Windows builds where a protected `UserChoiceLatest` bypasses that value, installs a per-user dynamic icon handler without changing the default application.
-- Saves the prior registry value before writing and provides guarded restoration.
-- Calls `SHChangeNotify(SHCNE_ASSOCCHANGED, ...)` after changes.
+- Renders at 16, 20, 24, 32, 40, 48, 64, 96, 128, and 256 pixels.
+- Loads a system-installed UI font at run time; no font file is bundled.
+- Detects file types with no icon, types showing the icon of the program that
+  opens them, types falling back to a shared generic icon, and types that already
+  carry an override — which automatic modes preserve.
+- Saves the prior setting before writing and provides guarded restoration.
 - Refuses executable and high-risk system extensions unless they are explicitly enabled.
 
-## Important correction about Administrator access
+On Windows:
 
-The normal mode is **per-user** and should not require Administrator rights:
+- Enumerates extension keys from the merged Windows class registry and Explorer's per-user `FileExts` history.
+- Resolves the effective ProgID, executable, application name, document name, content type, perceived type, and icon using `AssocQueryStringW`.
+- Flags likely generic icons sourced from `shell32.dll`, `imageres.dll`, or `ddores.dll`.
+- Generates a multi-image `.ico` and writes `DefaultIcon` at user or machine scope.
+- On Windows builds where a protected `UserChoiceLatest` bypasses that value, installs a per-user dynamic icon handler without changing the default application.
+- Calls `SHChangeNotify(SHCNE_ASSOCCHANGED, ...)` after changes.
+
+On Linux:
+
+- Enumerates file types from the freedesktop shared-mime-info database.
+- Resolves the handling application from `mimeapps.list`, `mimeinfo.cache`, and the
+  `MimeType=` declarations in installed desktop entries.
+- Resolves the icon a type actually displays by walking the active icon theme and
+  its inheritance chain, and reports a type as generic when the desktop fell back
+  from the type's own icon name to a shared one.
+- Installs PNGs at every configured size into the active XDG icon theme, backing
+  up any icons it displaces.
+- Refreshes the icon caches with `gtk-update-icon-cache` and `xdg-icon-resource`.
+
+See [How Linux support works](#how-linux-support-works) for the model and its one
+real difference in behaviour.
+
+## Important correction about elevated access
+
+The normal mode is **per-user** and should not require Administrator or root
+rights. It writes to:
 
 ```text
-HKEY_CURRENT_USER\Software\Classes\.ext\DefaultIcon
+Windows   HKEY_CURRENT_USER\Software\Classes\.ext\DefaultIcon
+Linux     $XDG_DATA_HOME/icons/<active theme>/<size>/mimetypes/<type>.png
 ```
 
-Machine-wide mode writes here and does require an elevated process:
+Machine-wide mode does require an elevated process:
 
 ```text
-HKEY_LOCAL_MACHINE\Software\Classes\.ext\DefaultIcon
+Windows   HKEY_LOCAL_MACHINE\Software\Classes\.ext\DefaultIcon
+Linux     /usr/share/icons/<active theme>/<size>/mimetypes/<type>.png
 ```
 
-Use machine scope only when a genuinely machine-wide convention is required. Per-user scope is safer, easier to restore, and sufficient for the usual Windows desktop.
+Use machine scope only when a genuinely machine-wide convention is required. Per-user scope is safer, easier to restore, and sufficient for the usual desktop. On Linux it is also the only scope that keeps out of directories owned by the distribution's packages.
 
-FileGlyph does **not** edit Explorer's protected `UserChoice` key and does not change which program opens a file.
+FileGlyph does **not** edit Explorer's protected `UserChoice` key, does not touch
+`mimeapps.list`, and on neither platform does it change which program opens a file.
 
 ## Build on Windows 11
 
@@ -71,15 +96,59 @@ machine scope.
 
 The source declares Rust 1.85 or newer. Build it as a native 64-bit Windows executable using the current stable MSVC toolchain.
 
+## Build on Linux
+
+Install the stable Rust toolchain, then run:
+
+```bash
+./build-linux.sh
+```
+
+Equivalent manual commands:
+
+```bash
+cargo fmt --all
+cargo test --workspace --all-targets
+cargo build --workspace --release
+```
+
+The executables will be:
+
+```text
+target/release/fileglyph
+target/release/fileglyph-gui
+```
+
+Build agents and servers with no desktop libraries can skip the GUI entirely:
+
+```bash
+./build-linux.sh --headless      # or: cargo build --release --no-default-features
+```
+
+Runtime dependencies are the ones a desktop already has: `shared-mime-info` for
+the type database, an icon theme, and a TrueType font. `gtk-update-icon-cache`
+and `xdg-icon-resource` are used when present and skipped when not.
+
 ## Safe first test
 
-A complete disposable user-scope test is included:
+A complete disposable user-scope test is included for each platform:
 
 ```powershell
 .\smoke-test.ps1
 ```
 
-The script creates a temporary `.fglyphdemo` association to Notepad, verifies that the scanner sees the executable-derived icon, applies a generated icon, restores the prior state, and deletes the test association in `finally` cleanup.
+```bash
+./smoke-test.sh
+```
+
+The Windows script creates a temporary `.fglyphdemo` association to Notepad, verifies that the scanner sees the executable-derived icon, applies a generated icon, restores the prior state, and deletes the test association in `finally` cleanup.
+
+The Linux script registers a temporary MIME type and a handler desktop entry of
+its own, checks that the scanner sees an icon-less candidate, applies, confirms
+the installed icon becomes the one the desktop resolves, confirms a second
+extension of the same type defers rather than fighting over it, restores, and
+removes everything it created from an `EXIT` trap. Both refuse to start if any of
+their artifacts already exist.
 
 For a real extension, inspect before writing:
 
@@ -116,11 +185,14 @@ fileglyph scan --extensions asd,foo,sqlite --all
 
 Modes:
 
-- `missing`: only associated types for which Windows reports no icon.
+- `missing`: only associated types for which the system reports no icon.
 - `conservative`: missing, executable-derived, and likely generic shell icons.
 - `aggressive`: conservative plus any associated type that lacks an extension-level override, even when its ProgID supplies a dedicated icon.
 
-The default `scan` output contains candidates only. `--all` exposes the surrounding registrations for review.
+The default `scan` output contains candidates only. `--all` exposes the surrounding registrations for review, and `--include-unassociated` adds types no installed program claims.
+
+The command examples in this section are written for PowerShell. The same
+invocations work unchanged in a Linux shell as `./fileglyph …`.
 
 ### Apply generated icons
 
@@ -140,7 +212,7 @@ fileglyph apply --extensions asd --scope machine --yes
 
 A real write always requires `--yes`. Automatic selection never includes the protected extension list unless `--include-protected` is also supplied.
 
-### Render without registry changes
+### Render without changing system settings
 
 ```powershell
 fileglyph render --extensions asd,foo,sqlite
@@ -159,7 +231,10 @@ fileglyph restore --extensions asd --dry-run
 fileglyph restore --all --yes
 ```
 
-Restore is guarded. If another program changed the same scoped registry value after FileGlyph applied it, FileGlyph skips that extension rather than overwriting the later change. `--force` deliberately bypasses that guard.
+Restore is guarded. If something else changed the same scoped setting after FileGlyph applied it — a registry value on Windows, the installed icon files on Linux — FileGlyph skips that extension rather than overwriting the later change. `--force` deliberately bypasses that guard.
+
+Where an apply displaced icons that were already present, restore puts the
+originals back byte for byte from the copies it made.
 
 ## Icon convention
 
@@ -171,7 +246,7 @@ The default style is deliberately plain:
 - horizontal compression only, so long labels fit without becoming vertically smaller;
 - top-aligned and right-aligned placement;
 - category-colored text;
-- thin neutral contrast halo for both light and dark Explorer backgrounds;
+- thin neutral contrast halo for both light and dark file-manager backgrounds;
 - no page silhouette, folded corner, picture, glyph, logo, or application branding.
 
 The abbreviation algorithm keeps the first character, then favors digits and consonants. Common exceptions such as `JPEG → JPG` and `SQLITE3 → SQLT` are built in. The JSON configuration can override any label.
@@ -208,8 +283,12 @@ fileglyph init-config
 Default path:
 
 ```text
-%LOCALAPPDATA%\FileGlyph\config.json
+Windows   %LOCALAPPDATA%\FileGlyph\config.json
+Linux     $XDG_DATA_HOME/FileGlyph/config.json    (usually ~/.local/share/FileGlyph)
 ```
+
+`style.font_paths` is searched in order and may hold entries for both platforms;
+the first path that exists is used, so one configuration file can serve both.
 
 See `config.example.json` for category, label, color, font, and exclusion examples. A different file can be supplied globally:
 
@@ -220,11 +299,62 @@ fileglyph --config D:\Settings\fileglyph.json scan
 Generated user icons and state are stored below:
 
 ```text
-%LOCALAPPDATA%\FileGlyph\icons
-%LOCALAPPDATA%\FileGlyph\state-user.json
+Windows   %LOCALAPPDATA%\FileGlyph\icons
+          %LOCALAPPDATA%\FileGlyph\state-user.json
+
+Linux     $XDG_DATA_HOME/icons/<active theme>/    (icons must live in a theme)
+          $XDG_DATA_HOME/FileGlyph/state-user.json
+          $XDG_DATA_HOME/FileGlyph/backup/        (icons displaced by an apply)
 ```
 
-Machine-scope icons are stored below `%PROGRAMDATA%\FileGlyph\icons`, while the recovery state remains in the invoking user's local application-data directory.
+Machine-scope icons are stored below `%PROGRAMDATA%\FileGlyph\icons` on Windows and `/usr/share/icons` on Linux, while the recovery state remains in the invoking user's data directory on both.
+
+## How Linux support works
+
+Linux desktops do not give an icon to a file *extension*. They give it to a *MIME
+type*, which the shared-mime-info database derives from the extension. `.pdf` has
+no icon of its own — `application/pdf` does.
+
+An override is a PNG placed in an XDG icon theme under the name the desktop looks
+up, so `application/pdf` becomes `application-pdf.png`. Because `$XDG_DATA_HOME`
+precedes the system data directories in the theme search path, a user-scope copy
+of a theme directory shadows the distribution's copy without modifying it.
+
+FileGlyph installs into the **active** icon theme rather than into `hicolor`.
+Themes are searched before their fallbacks, so a theme that defines its own
+`application-pdf` would otherwise win over anything dropped into `hicolor`. The
+theme is read from `$FILEGLYPH_ICON_THEME`, then the GTK settings files, then
+`gsettings`, and finally defaults to `hicolor`. Restore works from the path
+recorded at apply time, so changing themes in between cannot strand the files.
+
+### One extension per file type
+
+This is the one place Linux behaves differently from Windows, and it is inherent
+rather than a limitation of the implementation. Several extensions commonly share
+one type — `.txt` and `.asc` are both `text/plain`; `.cpp`, `.cc`, `.cxx` and
+`.c++` are all `text/x-c++src` — and a type has exactly one icon, so it can carry
+exactly one label.
+
+FileGlyph makes that explicit instead of letting the last apply silently relabel
+the earlier ones. The first extension applied owns the type's icon; the rest are
+reported as `skipped_shared_type`, naming the owner and the shared type:
+
+```text
+.c     applied_extension     text-x-c++src.png   code / C
+.cpp   skipped_shared_type   text-x-c++src.png   shares the text/x-c++src file type with .c
+```
+
+Ownership is recorded in the state file, so it holds across runs until that
+extension is restored. To choose which label a shared type gets, apply only the
+extension you want, or set a `label_overrides` entry for it.
+
+### What counts as associated
+
+As on Windows, FileGlyph only offers to change types some installed program
+claims. Having a MIME type is not enough — a handler has to exist in
+`mimeapps.list`, `mimeinfo.cache`, or an installed desktop entry's `MimeType=`.
+On a minimal system with few applications installed, very few types qualify;
+`scan --all --include-unassociated` shows the rest.
 
 ## Effective icons and protected default applications
 
@@ -248,24 +378,45 @@ A later tray/service mode could audit and reassert FileGlyph-managed values, but
 - The initial classification tables are broad but not exhaustive. Unknown associated extensions fall into `internal` unless metadata gives a stronger signal.
 - Registry backups currently preserve the exact prior string but not its original registry value type. `DefaultIcon` is normally `REG_SZ`, which is also what FileGlyph writes; a later hardening pass should preserve raw value type/data for unusual registrations.
 - Apply/restore operations are not process-locked. Do not run two FileGlyph instances against the same scope at once.
-- This source package was assembled in a Linux environment without a Rust toolchain, so the included Windows build and smoke-test scripts are the authoritative compile/run gate. See `VALIDATION.md`.
+- The Linux backend approximates the desktop's icon lookup by scanning theme
+  directories rather than reading each theme's `index.theme` directory list. It
+  picks the largest raster available and prefers PNG over SVG, which is what
+  FileGlyph installs and compares against; an exotic theme layout could resolve
+  differently from the real file manager.
+- Linux desktops cache icons at least as aggressively as Explorer. FileGlyph runs
+  `gtk-update-icon-cache` and `xdg-icon-resource` where available, but some file
+  managers still need a restart before old icons disappear.
+- Machine scope on Linux writes into `/usr/share/icons/<theme>`, which belongs to
+  a distribution package. Those files survive until the theme package is updated
+  or reinstalled. Prefer user scope.
+- Icons are installed into the active icon theme, so switching themes leaves them
+  behind for the old theme. Restore still removes them correctly, because it uses
+  the path recorded at apply time, but they will not be in effect meanwhile.
+- Type descriptions are read from the untranslated `<comment>` in shared-mime-info
+  XML; the locale-specific names are ignored.
+- The Windows build and smoke-test scripts remain the authoritative compile/run
+  gate for the Windows backend. See `VALIDATION.md`.
 
 ## Repository map
 
 ```text
 src/platform/windows.rs  Windows association and registry integration
+src/platform/linux.rs    XDG shared-mime-info and icon-theme integration
 src/scan.rs              candidate assessment
 src/classify.rs          extension/category and label rules
-src/icon.rs              fontdue renderer and multi-size ICO writer
+src/icon.rs              fontdue renderer, multi-size ICO and PNG writers
 src/operations.rs        apply/render/restore workflows
 src/state.rs             recovery journal
 src/cli.rs               command-line contract
 src/bin/fileglyph-gui.rs egui front end
-icon-handler/            minimal Explorer-loaded COM DLL
+src/paths.rs             per-platform data, icon and backup locations
+icon-handler/            minimal Explorer-loaded COM DLL (Windows only)
 DESIGN.md                 architecture and design rationale
 AGENT-HANDOFF.md          continuation checklist for an implementing agent
+build-windows.ps1 / smoke-test.ps1   Windows build and end-to-end check
+build-linux.sh    / smoke-test.sh     Linux build and end-to-end check
 tools/static_validate.py   offline package and sample-icon verifier
 VALIDATION.md              checks run in the packaging environment
 ```
 
-The project is intentionally dependency-light and keeps Windows FFI confined to one module.
+The project is intentionally dependency-light and keeps all host-specific code confined to `src/platform/`. Everything above that layer works in extensions and treats the rest as opaque strings, which is what lets one scanner and one apply/restore path serve both systems.

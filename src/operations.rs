@@ -9,7 +9,7 @@ use crate::platform;
 use crate::state::{AppliedRecord, IconMechanism, ProgIdRecord, StateFile};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,7 +34,7 @@ pub fn render_extensions(
     let mut rendered = Vec::new();
     for record in records {
         let path = output_dir.join(paths::icon_file_name(&record.extension)?);
-        renderer.write_ico(&path, &record.label, record.category)?;
+        renderer.write_platform_icon(&path, &record.label, record.category)?;
         rendered.push(RenderedIcon {
             extension: record.extension.clone(),
             label: record.label.clone(),
@@ -64,6 +64,17 @@ pub fn apply(
     };
     let mut state = StateFile::load(scope)?;
     let mut reports = Vec::new();
+    // Several extensions can name one system file type — on Linux `.txt` and
+    // `.asc` are both `text/plain`, and a type has exactly one icon. Without this
+    // the last extension applied would silently relabel the earlier ones.
+    //
+    // Ownership is seeded from the saved state so it also holds across runs: a
+    // type keeps the label it was given until that extension is restored.
+    let mut claimed: BTreeMap<PathBuf, String> = state
+        .records
+        .iter()
+        .map(|(extension, applied)| (PathBuf::from(&applied.icon_path), extension.clone()))
+        .collect();
 
     for record in records {
         if !record.associated {
@@ -73,7 +84,27 @@ pub fn apply(
             bail!("{} is excluded by configuration", record.extension);
         }
 
-        let icon_path = paths::icon_path(scope, &record.extension)?;
+        let icon_path = platform::icon_asset_path(config, scope, record)?;
+        // Re-applying an extension over its own icon is a refresh, not a conflict.
+        if let Some(owner) = claimed
+            .get(&icon_path)
+            .filter(|owner| **owner != record.extension)
+        {
+            reports.push(ActionReport {
+                extension: record.extension.clone(),
+                action: "skipped_shared_type".to_string(),
+                registry_value: None,
+                icon_path: Some(icon_path.display().to_string()),
+                note: format!(
+                    "shares the {} file type with {owner}, which already supplies the icon; \
+                     select only one of them to choose the label",
+                    record.prog_id.as_deref().unwrap_or("same")
+                ),
+            });
+            continue;
+        }
+        claimed.insert(icon_path.clone(), record.extension.clone());
+
         let registry_value = platform::registry_reference(&icon_path);
         if dry_run {
             reports.push(ActionReport {
@@ -90,8 +121,9 @@ pub fn apply(
         }
 
         let renderer = renderer.as_ref().expect("renderer exists outside dry-run");
-        renderer.write_ico(&icon_path, &record.label, record.category)?;
 
+        // Read the outgoing value first. On Linux installing the icon file *is* the
+        // override, so anything read afterwards would already be FileGlyph's own.
         let current = platform::read_scoped_icon(scope, &record.extension)?;
         let previous = state
             .records
@@ -108,13 +140,21 @@ pub fn apply(
             record.label.clone(),
         );
 
-        // Persist the recovery record before touching the registry. If the registry
-        // write fails or the process dies, guarded restore will compare current state
-        // with applied_registry_value before changing anything.
+        // Persist the recovery record before changing anything. If a later step
+        // fails or the process dies, guarded restore will compare the current state
+        // with applied_registry_value before touching the system.
         state
             .records
             .insert(record.extension.clone(), applied.clone());
         state.save()?;
+
+        if let Err(error) = platform::write_icon_asset(renderer, scope, record) {
+            applied.last_error = Some(format!("{error:#}"));
+            state.records.insert(record.extension.clone(), applied);
+            state.save()?;
+            return Err(error)
+                .with_context(|| format!("failed to generate the icon for {}", record.extension));
+        }
 
         if let Err(error) = platform::write_scoped_icon(scope, &record.extension, &registry_value) {
             applied.last_error = Some(format!("{error:#}"));
@@ -138,7 +178,7 @@ pub fn apply(
                 }
                 Ok(None) => {
                     applied.last_error = Some(
-                        "extension value was written, but Windows still resolves another icon"
+                        "the icon override was written, but the system still resolves another icon"
                             .to_string(),
                     );
                 }
@@ -301,13 +341,14 @@ pub fn restore(
             continue;
         }
 
-        match record.previous_registry_value.as_deref() {
-            Some(previous) => platform::write_scoped_icon(scope, &extension, previous)?,
-            None => platform::remove_scoped_icon(scope, &extension)?,
-        }
+        platform::restore_scoped_icon(
+            scope,
+            &extension,
+            record.previous_registry_value.as_deref(),
+            &record.icon_path,
+        )?;
         state.records.remove(&extension);
         state.save()?;
-        let _ = fs::remove_file(&record.icon_path);
         reports.push(ActionReport {
             extension,
             action: "restored".to_string(),
@@ -337,6 +378,11 @@ fn install_effective_handler(
     icon_path: &Path,
     scope: Scope,
 ) -> Result<Option<String>> {
+    // Only Windows has a second mechanism to fall back to; elsewhere the primary
+    // override cannot be out-ranked, so there is nothing to escalate to.
+    if !platform::SUPPORTS_ICON_HANDLER_FALLBACK {
+        return Ok(None);
+    }
     if scope != Scope::User {
         return Ok(None);
     }

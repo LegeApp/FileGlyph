@@ -331,8 +331,11 @@ def main() -> int:
         "LICENSE",
         "build-windows.ps1",
         "smoke-test.ps1",
+        "build-linux.sh",
+        "smoke-test.sh",
         "src/main.rs",
         "src/platform/windows.rs",
+        "src/platform/linux.rs",
     ]
     for path in required:
         require(path)

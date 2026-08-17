@@ -133,7 +133,7 @@ fn main() -> Result<()> {
         }
         Command::Refresh => {
             platform::notify_association_changed();
-            println!("Explorer association-change notification sent");
+            println!("icon and association caches refreshed");
         }
         Command::InitConfig(_) => unreachable!(),
     }
@@ -166,9 +166,9 @@ fn select_explicit(
     let mut selected = Vec::new();
 
     for extension in requested {
-        let record = by_extension.get(extension.as_str()).with_context(|| {
-            format!("{extension} was not found in the Windows file-type registry")
-        })?;
+        let record = by_extension
+            .get(extension.as_str())
+            .with_context(|| format!("{extension} is not a file type this system knows about"))?;
         if !record.associated {
             bail!("{extension} has no resolved program association");
         }

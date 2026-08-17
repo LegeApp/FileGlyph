@@ -1,11 +1,10 @@
 use crate::classify::is_protected_extension;
 use crate::config::Config;
 use crate::model::{
-    normalize_path_for_comparison, CandidateMode, FileTypeRecord, IconAssessment, IconLocation,
+    normalized_expanded_path, CandidateMode, FileTypeRecord, IconAssessment, IconLocation,
 };
 use crate::platform;
 use anyhow::Result;
-use std::env;
 
 pub fn scan_file_types(
     config: &Config,
@@ -33,6 +32,7 @@ pub fn scan_file_types(
                     raw.extension_icon.as_deref(),
                     raw.effective_icon.as_deref(),
                     raw.executable.as_deref(),
+                    raw.content_type.as_deref(),
                 )
             };
         let protected = is_protected_extension(&raw.extension);
@@ -71,6 +71,7 @@ fn assess_icon(
     extension_icon: Option<&str>,
     effective_icon: Option<&str>,
     executable: Option<&str>,
+    content_type: Option<&str>,
 ) -> IconAssessment {
     if !associated {
         return IconAssessment::Unassociated;
@@ -80,7 +81,7 @@ fn assess_icon(
         if icon_is_executable(icon, executable) {
             return IconAssessment::InheritedExecutableIcon;
         }
-        if is_likely_generic_shell_icon(icon) {
+        if is_likely_generic_shell_icon(icon, content_type) {
             return IconAssessment::LikelyGenericShellIcon;
         }
         if let Some(effective) = non_empty(effective_icon) {
@@ -96,7 +97,9 @@ fn assess_icon(
         Some(icon) if icon_is_executable(icon, executable) => {
             IconAssessment::InheritedExecutableIcon
         }
-        Some(icon) if is_likely_generic_shell_icon(icon) => IconAssessment::LikelyGenericShellIcon,
+        Some(icon) if is_likely_generic_shell_icon(icon, content_type) => {
+            IconAssessment::LikelyGenericShellIcon
+        }
         Some(_) => IconAssessment::DedicatedProgramIcon,
     }
 }
@@ -112,78 +115,105 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
+/// Whether the file type is simply showing the icon of the program that opens it.
+///
+/// What counts as "the program's own icon" is platform-specific: Windows points
+/// the type straight at the executable, while a Linux type resolves to the same
+/// theme icon the application uses. Both live behind the platform module.
 fn icon_is_executable(icon: &str, executable: Option<&str>) -> bool {
-    let Some(executable) = executable else {
-        return false;
-    };
-    let location = IconLocation::parse(icon);
-    if location.index != 0 {
-        return false;
-    }
-    normalized_expanded_path(&location.path) == normalized_expanded_path(executable)
+    platform::icon_belongs_to_application(icon, executable)
 }
 
-fn is_likely_generic_shell_icon(icon: &str) -> bool {
-    let path = normalized_expanded_path(&IconLocation::parse(icon).path);
-    ["\\shell32.dll", "\\imageres.dll", "\\ddores.dll"]
-        .iter()
-        .any(|suffix| path.ends_with(suffix))
-}
-
-fn normalized_expanded_path(value: &str) -> String {
-    let value = value.trim().trim_start_matches('@');
-    normalize_path_for_comparison(&expand_environment(value))
-}
-
-fn expand_environment(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let mut result = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] == '%' {
-            if let Some(relative_end) = chars[index + 1..].iter().position(|ch| *ch == '%') {
-                let end = index + 1 + relative_end;
-                let name: String = chars[index + 1..end].iter().collect();
-                if let Some(replacement) = env::var_os(&name) {
-                    result.push_str(&replacement.to_string_lossy());
-                    index = end + 1;
-                    continue;
-                }
-            }
-        }
-        result.push(chars[index]);
-        index += 1;
-    }
-    result
+/// Whether the resolved icon is one the desktop hands to file types it knows
+/// nothing specific about.
+///
+/// Also entirely platform-specific, and the content type is what makes the answer
+/// exact on Linux: a shared icon is only "generic" relative to the type that ended
+/// up with it, since one theme icon can be another type's dedicated one.
+fn is_likely_generic_shell_icon(icon: &str, content_type: Option<&str>) -> bool {
+    platform::is_generic_system_icon(
+        &normalized_expanded_path(&IconLocation::parse(icon).path),
+        content_type,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Icon strings shaped the way the host actually reports them, so the
+    /// platform hooks inside `assess_icon` parse input of the right form.
+    #[cfg(windows)]
+    mod sample {
+        pub const CUSTOM: &str = r"C:\Icons\abc.ico,0";
+        pub const PROGRAM: &str = r"C:\Apps\viewer.exe,0";
+        pub const GENERIC: &str = r"C:\Windows\System32\shell32.dll,-152";
+        pub const EXECUTABLE: &str = r"C:\Apps\viewer.exe";
+    }
+
+    #[cfg(not(windows))]
+    mod sample {
+        pub const CUSTOM: &str = "/usr/share/icons/hicolor/256x256/mimetypes/application-pdf.png";
+        pub const PROGRAM: &str = "/usr/share/icons/Adwaita/48x48/mimetypes/x-office-document.png";
+        pub const GENERIC: &str = "/usr/share/icons/Adwaita/48x48/mimetypes/text-x-generic.png";
+        pub const EXECUTABLE: &str = "/usr/bin/viewer";
+    }
+
     #[test]
     fn direct_custom_icon_is_preserved() {
         assert_eq!(
             assess_icon(
                 true,
-                Some(r#"C:\Icons\abc.ico,0"#),
-                Some(r#"C:\Icons\abc.ico,0"#),
-                Some(r#"C:\Program Files\ABC\abc.exe"#),
+                Some(sample::CUSTOM),
+                Some(sample::CUSTOM),
+                Some(sample::EXECUTABLE),
+                None,
             ),
             IconAssessment::ExistingExtensionOverride
         );
     }
 
     #[test]
-    fn executable_icon_is_detected() {
+    fn unassociated_types_are_left_alone() {
+        assert_eq!(
+            assess_icon(false, None, None, None, None),
+            IconAssessment::Unassociated
+        );
+    }
+
+    #[test]
+    fn absent_icon_is_reported_missing() {
+        assert_eq!(
+            assess_icon(true, None, None, Some(sample::EXECUTABLE), None),
+            IconAssessment::MissingIcon
+        );
+    }
+
+    #[test]
+    fn generic_system_icon_is_detected() {
         assert_eq!(
             assess_icon(
                 true,
                 None,
-                Some(r#""C:\Program Files\ABC\abc.exe",0"#),
-                Some(r#"C:\Program Files\ABC\abc.exe"#),
+                Some(sample::GENERIC),
+                Some(sample::EXECUTABLE),
+                None
             ),
-            IconAssessment::InheritedExecutableIcon
+            IconAssessment::LikelyGenericShellIcon
+        );
+    }
+
+    #[test]
+    fn dedicated_program_icon_is_left_alone() {
+        assert_eq!(
+            assess_icon(
+                true,
+                None,
+                Some(sample::PROGRAM),
+                Some(sample::EXECUTABLE),
+                None
+            ),
+            IconAssessment::DedicatedProgramIcon
         );
     }
 
@@ -192,11 +222,30 @@ mod tests {
         assert_eq!(
             assess_icon(
                 true,
-                Some(r#"C:\Icons\txt.ico,0"#),
-                Some(r#"C:\Apps\viewer.exe,0"#),
-                Some(r#"C:\Apps\viewer.exe"#),
+                Some(sample::CUSTOM),
+                Some(sample::PROGRAM),
+                Some(sample::EXECUTABLE),
+                None,
             ),
             IconAssessment::IneffectiveExtensionOverride
+        );
+    }
+
+    /// Windows registers the executable itself as the icon resource. The Linux
+    /// equivalent resolves through a desktop entry and is covered by
+    /// `platform::linux`, which owns that lookup.
+    #[cfg(windows)]
+    #[test]
+    fn executable_icon_is_detected() {
+        assert_eq!(
+            assess_icon(
+                true,
+                None,
+                Some(r#""C:\Apps\viewer.exe",0"#),
+                Some(sample::EXECUTABLE),
+                None,
+            ),
+            IconAssessment::InheritedExecutableIcon
         );
     }
 }

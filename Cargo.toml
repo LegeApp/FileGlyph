@@ -3,25 +3,47 @@ name = "fileglyph"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Generate standardized text icons for Windows file extensions and install them as extension-level icon overrides."
+description = "Generate standardized text icons for file extensions and install them as system icon overrides (Windows registry, Linux XDG icon themes)."
 license = "MIT"
 publish = false
 
 [workspace]
 members = ["icon-handler"]
 
+[features]
+default = ["gui"]
+# The desktop GUI pulls in eframe/winit. Headless Linux hosts that only need the
+# CLI can build with --no-default-features and skip the windowing stack entirely.
+gui = ["dep:eframe"]
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 dirs = "6.0"
-eframe = { version = "0.35.0", default-features = false, features = ["glow"] }
 fontdue = "0.9.3"
 ico = "0.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# x11/wayland are no-ops on Windows: winit gates those backends by target, so the
+# same feature list resolves on both platforms.
+[dependencies.eframe]
+version = "0.35.0"
+default-features = false
+features = ["glow", "x11", "wayland"]
+optional = true
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
+
+[[bin]]
+name = "fileglyph"
+path = "src/main.rs"
+
+[[bin]]
+name = "fileglyph-gui"
+path = "src/bin/fileglyph-gui.rs"
+required-features = ["gui"]
 
 [profile.release]
 lto = "thin"

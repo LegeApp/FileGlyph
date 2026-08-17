@@ -1,12 +1,11 @@
 use crate::config::Config;
-use crate::model::Category;
+use crate::model::{expand_environment, Category};
 use crate::paths;
 use anyhow::{bail, Context, Result};
 use fontdue::layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle};
 use fontdue::{Font, FontSettings};
 use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
 use std::collections::VecDeque;
-use std::env;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -39,10 +38,7 @@ impl<'a> IconRenderer<'a> {
         let color = self.config.color_for(category)?;
         let mut directory = IconDir::new(ResourceType::Icon);
 
-        let mut sizes = self.config.style.sizes.clone();
-        sizes.sort_unstable();
-        sizes.dedup();
-        for size in sizes {
+        for size in self.sizes() {
             let rgba = self.render_rgba(size, label, color)?;
             let image = IconImage::from_rgba_data(size, size, rgba);
             let entry = if size <= 48 {
@@ -74,9 +70,45 @@ impl<'a> IconRenderer<'a> {
         paths::ensure_parent(output)?;
         let color = self.config.color_for(category)?;
         let rgba = self.render_rgba(size, label, color)?;
+
+        // Written through a temporary file for the same reason as write_ico: an
+        // icon theme directory must never be left holding a truncated image.
+        let temporary = temporary_path(output);
         IconImage::from_rgba_data(size, size, rgba)
-            .write_png(File::create(output)?)
-            .with_context(|| format!("failed to write PNG {}", output.display()))
+            .write_png(File::create(&temporary).with_context(|| {
+                format!("failed to create temporary PNG {}", temporary.display())
+            })?)
+            .with_context(|| format!("failed to write PNG {}", temporary.display()))?;
+        replace_file(&temporary, output)
+    }
+
+    /// Write one standalone icon file in whatever container the host desktop reads.
+    ///
+    /// Windows takes a multi-size ICO; Linux desktops read individual PNGs, so a
+    /// single file gets the largest configured size.
+    pub fn write_platform_icon(
+        &self,
+        output: &Path,
+        label: &str,
+        category: Category,
+    ) -> Result<()> {
+        if cfg!(windows) {
+            self.write_ico(output, label, category)
+        } else {
+            self.write_png(output, self.largest_size(), label, category)
+        }
+    }
+
+    /// Configured ICO/PNG sizes, ascending and deduplicated.
+    pub fn sizes(&self) -> Vec<u32> {
+        let mut sizes = self.config.style.sizes.clone();
+        sizes.sort_unstable();
+        sizes.dedup();
+        sizes
+    }
+
+    pub fn largest_size(&self) -> u32 {
+        self.sizes().last().copied().unwrap_or(256)
     }
 
     pub fn write_category_preview(&self, output: &Path, cell_size: u32) -> Result<()> {
@@ -298,28 +330,6 @@ fn find_font(config: &Config, override_path: Option<&Path>) -> Result<PathBuf> {
         .collect::<Vec<_>>()
         .join("\n");
     bail!("no usable font was found. Pass --font PATH or edit style.font_paths. Tried:\n{rendered}")
-}
-
-fn expand_environment(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let mut result = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] == '%' {
-            if let Some(relative_end) = chars[index + 1..].iter().position(|ch| *ch == '%') {
-                let end = index + 1 + relative_end;
-                let name: String = chars[index + 1..end].iter().collect();
-                if let Some(replacement) = env::var_os(&name) {
-                    result.push_str(&replacement.to_string_lossy());
-                    index = end + 1;
-                    continue;
-                }
-            }
-        }
-        result.push(chars[index]);
-        index += 1;
-    }
-    result
 }
 
 fn resize_gray_horizontal(source: &GrayImage, target_width: u32) -> GrayImage {
@@ -581,13 +591,5 @@ mod tests {
         let mut destination = [0; 5];
         sliding_max(&source, &mut destination, 1);
         assert_eq!(destination, [0, 10, 10, 10, 0]);
-    }
-
-    #[test]
-    fn environment_expansion_keeps_unknown_variables() {
-        assert_eq!(
-            expand_environment("%FILEGLYPH_UNSET_TEST%\\x"),
-            "%FILEGLYPH_UNSET_TEST%\\x"
-        );
     }
 }

@@ -7,44 +7,80 @@ use fileglyph::{operations, platform, scan};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-fn windows_font_path(file_name: &str) -> PathBuf {
-    std::env::var_os("WINDIR")
+/// Absolute paths to try for a UI font, most preferred first.
+///
+/// egui ships no default font here (`FontDefinitions::empty`), so the system has
+/// to supply one. Windows keeps its fonts in one directory; Linux spreads them
+/// across per-family directories under the standard font roots.
+#[cfg(windows)]
+fn system_font_candidates(monospace: bool) -> Vec<PathBuf> {
+    let root = std::env::var_os("WINDIR")
         .or_else(|| std::env::var_os("SystemRoot"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("Fonts")
-        .join(file_name)
+        .join("Fonts");
+    let names: &[&str] = if monospace {
+        &["consola.ttf", "cour.ttf"]
+    } else {
+        &["segoeui.ttf", "tahoma.ttf", "arial.ttf"]
+    };
+    names.iter().map(|name| root.join(name)).collect()
 }
 
-fn read_first_font(candidates: &[&str]) -> Option<Vec<u8>> {
-    candidates
+#[cfg(not(windows))]
+fn system_font_candidates(monospace: bool) -> Vec<PathBuf> {
+    let relative: &[&str] = if monospace {
+        &[
+            "truetype/dejavu/DejaVuSansMono.ttf",
+            "truetype/liberation/LiberationMono-Regular.ttf",
+            "truetype/ubuntu/UbuntuMono-R.ttf",
+            "TTF/DejaVuSansMono.ttf",
+        ]
+    } else {
+        &[
+            "truetype/dejavu/DejaVuSans.ttf",
+            "truetype/liberation/LiberationSans-Regular.ttf",
+            "truetype/ubuntu/Ubuntu-R.ttf",
+            "truetype/noto/NotoSans-Regular.ttf",
+            "TTF/DejaVuSans.ttf",
+        ]
+    };
+    let roots = [
+        PathBuf::from("/usr/share/fonts"),
+        PathBuf::from("/usr/local/share/fonts"),
+    ];
+    roots
         .iter()
-        .map(|name| windows_font_path(name))
+        .flat_map(|root| relative.iter().map(|name| root.join(name)))
+        .collect()
+}
+
+fn read_first_font(monospace: bool) -> Option<Vec<u8>> {
+    system_font_candidates(monospace)
+        .into_iter()
         .find_map(|path| std::fs::read(path).ok())
 }
 
-fn configure_windows_fonts(context: &egui::Context) -> Result<(), String> {
-    let proportional = read_first_font(&["segoeui.ttf", "tahoma.ttf", "arial.ttf"])
-        .ok_or_else(|| "Could not read a Windows proportional font.".to_owned())?;
-    let monospace =
-        read_first_font(&["consola.ttf", "cour.ttf"]).unwrap_or_else(|| proportional.clone());
+fn configure_system_fonts(context: &egui::Context) -> Result<(), String> {
+    let proportional = read_first_font(false)
+        .ok_or_else(|| "Could not read a system proportional font.".to_owned())?;
+    let monospace = read_first_font(true).unwrap_or_else(|| proportional.clone());
 
     let mut fonts = egui::FontDefinitions::empty();
     fonts.font_data.insert(
-        "windows-ui".to_owned(),
+        "system-ui".to_owned(),
         egui::FontData::from_owned(proportional).into(),
     );
     fonts.font_data.insert(
-        "windows-monospace".to_owned(),
+        "system-monospace".to_owned(),
         egui::FontData::from_owned(monospace).into(),
     );
-    fonts.families.insert(
-        egui::FontFamily::Proportional,
-        vec!["windows-ui".to_owned()],
-    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Proportional, vec!["system-ui".to_owned()]);
     fonts.families.insert(
         egui::FontFamily::Monospace,
-        vec!["windows-monospace".to_owned(), "windows-ui".to_owned()],
+        vec!["system-monospace".to_owned(), "system-ui".to_owned()],
     );
     context.set_fonts(fonts);
     Ok(())
@@ -64,7 +100,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|context| {
             context.egui_ctx.set_theme(egui::ThemePreference::System);
-            let font_error = configure_windows_fonts(&context.egui_ctx).err();
+            let font_error = configure_system_fonts(&context.egui_ctx).err();
             let mut app = FileGlyphApp::new();
             if let Some(error) = font_error {
                 app.set_error(error);
@@ -203,7 +239,7 @@ impl FileGlyphApp {
             Ok(reports) => {
                 self.confirm_apply = false;
                 self.set_message(format!(
-                    "Applied {} icon(s) in {} scope. Reopen Explorer folders if old icons remain.",
+                    "Applied {} icon(s) in {} scope. Reopen file manager windows if old icons remain.",
                     reports.len(),
                     self.scope
                 ));
@@ -275,11 +311,9 @@ impl eframe::App for FileGlyphApp {
                 if ui.button("Rescan").clicked() {
                     self.rescan();
                 }
-                if ui.button("Refresh Explorer").clicked() {
+                if ui.button("Refresh icon caches").clicked() {
                     platform::notify_association_changed();
-                    self.set_message(
-                        "Explorer cache invalidation completed. Reopen affected folders.",
-                    );
+                    self.set_message("Icon caches refreshed. Reopen affected folders.");
                 }
             });
 

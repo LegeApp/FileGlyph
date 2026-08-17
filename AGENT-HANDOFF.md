@@ -2,6 +2,10 @@
 
 The source is intended to be taken directly to a Windows 11 machine for the first compile and behavioral pass.
 
+Linux support has since been implemented and validated on Ubuntu 24.04; see
+`VALIDATION.md` and the Linux checklist at the end of this file. The Windows
+passes below are unchanged and still outstanding.
+
 ## First pass: compile, do not redesign
 
 1. Install stable Rust MSVC and run `build-windows.ps1`.
@@ -93,3 +97,34 @@ Only after the scanner and restore path are proven:
 - request elevation only when machine scope is chosen;
 - optionally add an opt-in audit mode that reports overwritten managed values;
 - do not add registry ACL hardening by default.
+
+## Linux checklist
+
+The XDG backend (`src/platform/linux.rs`) is implemented and exercised by
+`smoke-test.sh`. Remaining work, in rough priority order:
+
+- Run a pass on a full desktop (GNOME/Yaru, KDE/Breeze) rather than a container.
+  The active-theme detection, the `apps` icon lookup used to spot an inherited
+  application icon, and the cache-refresh commands all deserve confirmation
+  against a real file manager.
+- Review the candidate quality of a real desktop's type set, the same way the
+  Windows candidate-quality pass asks:
+
+  ```bash
+  fileglyph scan --mode conservative --format json > conservative.json
+  fileglyph scan --all --format json > all.json
+  ```
+
+  Pay attention to types whose `generic-icons` fallback is arguably specific
+  enough to leave alone (`x-office-document`, `package-x-generic`), and to labels
+  that abbreviate poorly.
+- Decide whether the shared-MIME-type rule should pick a better owner than "first
+  extension applied". A principled choice (the type's canonical extension) has no
+  direct source in shared-mime-info, which is why the current rule is positional
+  and reported explicitly.
+- Consider reading each theme's `index.theme` `Directories` list instead of
+  scanning theme directories, if an exotic theme layout is found to resolve
+  differently from GTK.
+- Consider a KDE pass: Plasma reads the same icon themes but has its own cache
+  invalidation, so `refresh` may need a `kbuildsycoca6`-equivalent step.
+- The GUI has not been run under a display server; only compiled.
