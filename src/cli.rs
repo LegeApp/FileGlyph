@@ -6,11 +6,12 @@ use std::path::PathBuf;
 #[command(
     name = "fileglyph",
     version,
-    about = "Generate and install standardized text icons for Windows file extensions",
+    about = "Generate and install standardized text icons for system file types",
     long_about = None
 )]
 pub struct Cli {
-    /// JSON configuration file. Defaults to %LOCALAPPDATA%\\FileGlyph\\config.json if present.
+    /// JSON configuration file. Defaults to the per-user FileGlyph data directory
+    /// (%LOCALAPPDATA%\\FileGlyph on Windows, $XDG_DATA_HOME/FileGlyph on Linux).
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -22,17 +23,17 @@ pub struct Cli {
 pub enum Command {
     /// Find associated file extensions whose current icon is missing or generic.
     Scan(ScanArgs),
-    /// Generate ICO files and install extension-level DefaultIcon overrides.
+    /// Generate icon files and install them as system icon overrides.
     Apply(ApplyArgs),
-    /// Restore registry values recorded before apply.
+    /// Restore the icon settings recorded before apply.
     Restore(RestoreArgs),
-    /// Render ICO files without touching the registry.
+    /// Render icon files without changing any system setting.
     Render(RenderArgs),
     /// Render a PNG contact sheet for all category styles.
     Preview(PreviewArgs),
-    /// Show FileGlyph's recorded registry changes.
+    /// Show the changes FileGlyph has recorded.
     Status(StatusArgs),
-    /// Tell Explorer that file associations/icons changed.
+    /// Tell the desktop shell that file associations/icons changed.
     Refresh,
     /// Write a default editable JSON configuration.
     InitConfig(InitConfigArgs),
@@ -77,7 +78,8 @@ pub struct ApplyArgs {
     #[arg(long, value_enum, default_value_t = CandidateMode::Conservative)]
     pub mode: CandidateMode,
 
-    /// User scope normally needs no elevation; machine scope requires Administrator.
+    /// User scope normally needs no privileges; machine scope requires
+    /// Administrator on Windows or root on Linux.
     #[arg(long, value_enum, default_value_t = Scope::User)]
     pub scope: Scope,
 
@@ -89,11 +91,11 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub font: Option<PathBuf>,
 
-    /// Print intended changes without generating icons or writing the registry.
+    /// Print intended changes without generating icons or changing any setting.
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Required for a real registry write.
+    /// Required to actually change the system.
     #[arg(long)]
     pub yes: bool,
 
@@ -114,14 +116,14 @@ pub struct RestoreArgs {
     #[arg(long)]
     pub all: bool,
 
-    /// Restore even if another program changed the registry after FileGlyph applied its value.
+    /// Restore even if something else changed the icon after FileGlyph applied it.
     #[arg(long)]
     pub force: bool,
 
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Required for a real registry write.
+    /// Required to actually change the system.
     #[arg(long)]
     pub yes: bool,
 
@@ -143,7 +145,7 @@ pub struct RenderArgs {
     #[arg(long)]
     pub label: Option<String>,
 
-    /// Output directory. Defaults to %LOCALAPPDATA%\\FileGlyph\\rendered.
+    /// Output directory. Defaults to `rendered` in the FileGlyph data directory.
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
 

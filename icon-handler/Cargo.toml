@@ -8,5 +8,7 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
-[dependencies]
+# The crate body is #![cfg(windows)]; keeping the dependency target-gated lets the
+# workspace build on Linux without pulling in a Windows-only crate.
+[target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"

@@ -6,7 +6,11 @@
       "%WINDIR%\\Fonts\\segoeui.ttf",
       "%WINDIR%\\Fonts\\bahnschrift.ttf",
       "%WINDIR%\\Fonts\\arialbd.ttf",
-      "%WINDIR%\\Fonts\\arial.ttf"
+      "%WINDIR%\\Fonts\\arial.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+      "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+      "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"
     ],
     "font_height_ratio": 0.72,
     "horizontal_scale": 0.50,

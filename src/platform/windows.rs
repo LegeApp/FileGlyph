@@ -1,5 +1,11 @@
 use super::RawFileType;
-use crate::model::{is_valid_extension, normalize_extension, Scope};
+use crate::config::Config;
+use crate::icon::IconRenderer;
+use crate::model::{
+    is_valid_extension, normalize_extension, normalized_expanded_path, FileTypeRecord,
+    IconLocation, Scope,
+};
+use crate::paths;
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeSet;
 use std::ffi::c_void;
@@ -26,6 +32,70 @@ const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
 const SHCNF_IDLIST: u32 = 0x0000;
 const SHCNF_FLUSH: u32 = 0x1000;
 pub const FILEGLYPH_HANDLER_CLSID: &str = "{5F7A3B34-EA94-4A97-B08F-8D7DEA8CDF11}";
+
+/// A ProgID-level icon can out-rank the extension-level value, so the shell
+/// extension exists as a second mechanism when the first one does not take.
+pub const SUPPORTS_ICON_HANDLER_FALLBACK: bool = true;
+
+/// A registry icon value names a resource and an index within it.
+pub fn registry_reference(icon_path: &Path) -> String {
+    format!("\"{}\",0", icon_path.display())
+}
+
+/// Whether a registered icon is just the opening program's own executable.
+///
+/// Only index 0 counts: a non-zero index selects a specific resource inside the
+/// binary, which is a deliberate choice rather than an inherited default.
+pub fn icon_belongs_to_application(icon: &str, executable: Option<&str>) -> bool {
+    let Some(executable) = executable else {
+        return false;
+    };
+    let location = IconLocation::parse(icon);
+    if location.index != 0 {
+        return false;
+    }
+    normalized_expanded_path(&location.path) == normalized_expanded_path(executable)
+}
+
+/// Icons Explorer hands to file types with nothing more specific registered.
+/// The registered resource is enough to tell; the content type adds nothing.
+pub fn is_generic_system_icon(normalized_path: &str, _content_type: Option<&str>) -> bool {
+    ["\\shell32.dll", "\\imageres.dll", "\\ddores.dll"]
+        .iter()
+        .any(|suffix| normalized_path.ends_with(suffix))
+}
+
+/// One ICO per extension in FileGlyph's own directory; the registry points at it.
+pub fn icon_asset_path(_config: &Config, scope: Scope, record: &FileTypeRecord) -> Result<PathBuf> {
+    paths::icon_path(scope, &record.extension)
+}
+
+pub fn write_icon_asset(
+    renderer: &IconRenderer,
+    scope: Scope,
+    record: &FileTypeRecord,
+) -> Result<()> {
+    let path = paths::icon_path(scope, &record.extension)?;
+    renderer.write_ico(&path, &record.label, record.category)
+}
+
+/// Undo one applied extension: put the registry back, then drop the ICO it
+/// referenced. In that order, no window exists where the value points at a
+/// file that has already been deleted.
+pub fn restore_scoped_icon(
+    scope: Scope,
+    extension: &str,
+    previous: Option<&str>,
+    recorded_icon_path: &str,
+) -> Result<()> {
+    match previous {
+        Some(value) => write_scoped_icon(scope, extension, value)?,
+        None => remove_scoped_icon(scope, extension)?,
+    }
+    // Absence is the desired end state, so a missing file is not a failure.
+    let _ = fs::remove_file(recorded_icon_path);
+    Ok(())
+}
 
 #[link(name = "Shlwapi")]
 extern "system" {

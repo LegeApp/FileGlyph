@@ -81,6 +81,8 @@ fn default_sizes() -> Vec<u32> {
     vec![16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
 }
 
+/// Bold, condensed-ish UI faces first: the label has to stay legible at 16px.
+#[cfg(windows)]
 fn default_font_paths() -> Vec<String> {
     vec![
         "%WINDIR%\\Fonts\\segoeuib.ttf".to_string(),
@@ -88,6 +90,21 @@ fn default_font_paths() -> Vec<String> {
         "%WINDIR%\\Fonts\\bahnschrift.ttf".to_string(),
         "%WINDIR%\\Fonts\\arialbd.ttf".to_string(),
         "%WINDIR%\\Fonts\\arial.ttf".to_string(),
+    ]
+}
+
+/// Paths shipped by the common Debian/Ubuntu font packages, in the order a
+/// desktop install is most likely to have them.
+#[cfg(not(windows))]
+fn default_font_paths() -> Vec<String> {
+    vec![
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf".to_string(),
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf".to_string(),
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf".to_string(),
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf".to_string(),
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf".to_string(),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf".to_string(),
     ]
 }
 
@@ -289,6 +306,12 @@ impl Config {
             .get(category.as_str())
             .cloned()
             .unwrap_or_else(|| category.default_color().to_string())
+    }
+
+    /// Largest configured icon size. On Linux this is the size whose file stands
+    /// in for the whole installed set when a single path has to be recorded.
+    pub fn largest_icon_size(&self) -> u32 {
+        self.style.sizes.iter().copied().max().unwrap_or(256)
     }
 
     pub fn is_excluded(&self, extension: &str) -> bool {

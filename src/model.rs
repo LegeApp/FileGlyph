@@ -89,7 +89,7 @@ impl Display for Category {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateMode {
-    /// Only associated extensions for which Windows reports no icon.
+    /// Only associated extensions for which the system reports no icon.
     Missing,
     /// Missing icons, executable-inherited icons, and likely generic shell icons.
     Conservative,
@@ -100,9 +100,11 @@ pub enum CandidateMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
-    /// HKCU\\Software\\Classes. Normally does not require elevation.
+    /// Per-user settings: HKCU\\Software\\Classes on Windows, the user's XDG
+    /// icon theme on Linux. Normally requires no elevation.
     User,
-    /// HKLM\\Software\\Classes. Requires an elevated process.
+    /// System-wide settings: HKLM\\Software\\Classes on Windows, /usr/share/icons
+    /// on Linux. Requires Administrator or root.
     Machine,
 }
 
@@ -256,6 +258,12 @@ pub fn is_valid_extension(value: &str) -> bool {
     })
 }
 
+/// Reduce a system path to a form safe to compare against another path.
+///
+/// Windows paths are case-insensitive and accept either separator, so both are
+/// folded away. Linux paths are case-sensitive and only `/` separates
+/// components, so folding case there would equate genuinely different files.
+#[cfg(windows)]
 pub fn normalize_path_for_comparison(value: &str) -> String {
     value
         .trim()
@@ -263,6 +271,47 @@ pub fn normalize_path_for_comparison(value: &str) -> String {
         .replace('/', "\\")
         .trim_end_matches('\\')
         .to_ascii_lowercase()
+}
+
+#[cfg(not(windows))]
+pub fn normalize_path_for_comparison(value: &str) -> String {
+    let trimmed = value.trim().trim_matches('"');
+    let trimmed = trimmed.trim_end_matches('/');
+    if trimmed.is_empty() && value.contains('/') {
+        return "/".to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Fully resolve a system path so two spellings of the same file compare equal.
+pub fn normalized_expanded_path(value: &str) -> String {
+    // A leading '@' marks an indirect resource string on Windows.
+    let value = value.trim().trim_start_matches('@');
+    normalize_path_for_comparison(&expand_environment(value))
+}
+
+/// Substitute `%NAME%` references from the environment, leaving unknown names as
+/// written so a failed lookup stays visible instead of silently emptying a path.
+pub fn expand_environment(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut result = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '%' {
+            if let Some(relative_end) = chars[index + 1..].iter().position(|ch| *ch == '%') {
+                let end = index + 1 + relative_end;
+                let name: String = chars[index + 1..end].iter().collect();
+                if let Some(replacement) = std::env::var_os(&name) {
+                    result.push_str(&replacement.to_string_lossy());
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+        result.push(chars[index]);
+        index += 1;
+    }
+    result
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
